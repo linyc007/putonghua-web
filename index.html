@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#1565c0" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="普通话练习" />
+  <meta name="format-detection" content="telephone=no" />
+  <title>普通话测试练习</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icons/icon.svg" />
+  <link rel="icon" href="icons/icon.svg" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">PSC 命题说话</p>
+        <h1>普通话测试练习</h1>
+      </div>
+      <div class="header-actions">
+        <button id="settingsBtn" class="ghost-btn" type="button">⚙️ 设置</button>
+        <button id="installBtn" class="ghost-btn hidden" type="button">安装</button>
+      </div>
+    </header>
+
+    <main>
+      <section id="homeView" class="view active">
+        <div class="hero-card">
+          <div>
+            <p class="eyebrow light">AI 模拟评测</p>
+            <h2>选题、录音、转写、评分，一次完成</h2>
+            <p>适配 iPhone Safari，可添加到主屏幕作为 Web App 使用。</p>
+          </div>
+          <div class="stats-row">
+            <div>
+              <strong id="totalSessions">0</strong>
+              <span>练习次数</span>
+            </div>
+            <div>
+              <strong id="avgScore">--</strong>
+              <span>平均分</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="action-grid">
+          <button id="practiceBtn" class="primary-btn" type="button">选题练习</button>
+          <button id="simulateBtn" class="secondary-btn" type="button">随机模拟</button>
+        </div>
+
+        <article class="info-card">
+          <h3>考试说明</h3>
+          <p>命题说话通常要求连续说 3 分钟。本应用按语音标准程度、词汇语法规范程度、自然流畅程度三个维度生成练习反馈。</p>
+        </article>
+      </section>
+
+      <section id="topicsView" class="view">
+        <div class="section-title">
+          <button class="back-btn" data-back-home type="button">←</button>
+          <div>
+            <p class="eyebrow">题目库</p>
+            <h2>30 道命题说话题目</h2>
+          </div>
+        </div>
+        <div id="topicList" class="topic-list"></div>
+      </section>
+
+      <section id="practiceView" class="view">
+        <div class="section-title">
+          <button class="back-btn" id="practiceBackBtn" type="button">←</button>
+          <div>
+            <p id="practiceMode" class="eyebrow">练习模式</p>
+            <h2 id="practiceTopicTitle">题目</h2>
+          </div>
+        </div>
+
+        <article class="topic-card">
+          <p id="practiceTopicNo" class="topic-no"></p>
+          <h3 id="practiceTopicDesc"></h3>
+          <ul id="practiceTips"></ul>
+        </article>
+
+        <div class="timer-card">
+          <span id="timerText">00:00</span>
+          <small id="timerHint">建议时长 3 分钟</small>
+        </div>
+
+        <div class="record-panel">
+          <button id="recordBtn" class="record-btn" type="button">开始录音</button>
+          <p id="recordHint" class="record-hint">点击开始后，请允许麦克风权限。</p>
+        </div>
+
+        <article id="transcriptionCard" class="info-card hidden">
+          <h3>实时转写</h3>
+          <p id="transcriptionText" class="transcription-text"></p>
+        </article>
+
+        <article id="analyzingCard" class="info-card hidden center-card">
+          <div class="spinner"></div>
+          <h3>正在 AI 评测</h3>
+          <p>正在调用讯飞语音听写 / 星火大模型，请稍候…</p>
+        </article>
+      </section>
+
+      <section id="resultView" class="view">
+        <div class="section-title">
+          <button class="back-btn" data-back-home type="button">←</button>
+          <div>
+            <p class="eyebrow">评测结果</p>
+            <h2 id="resultTopicTitle">本次练习</h2>
+          </div>
+        </div>
+
+        <article class="score-card">
+          <span id="overallScore">--</span>
+          <p>综合得分</p>
+          <strong id="pscLevel"></strong>
+          <small id="durationText"></small>
+        </article>
+
+        <article class="info-card">
+          <h3>分项得分</h3>
+          <div class="score-item">
+            <span>语音标准程度</span>
+            <progress id="pronunciationProgress" value="0" max="100"></progress>
+            <strong id="pronunciationScore">--</strong>
+          </div>
+          <div class="score-item">
+            <span>词汇语法规范</span>
+            <progress id="vocabularyProgress" value="0" max="100"></progress>
+            <strong id="vocabularyScore">--</strong>
+          </div>
+          <div class="score-item">
+            <span>自然流畅程度</span>
+            <progress id="fluencyProgress" value="0" max="100"></progress>
+            <strong id="fluencyScore">--</strong>
+          </div>
+        </article>
+
+        <article id="iseCard" class="info-card hidden">
+          <h3>语音评测 ISE</h3>
+          <div class="ise-grid">
+            <div><strong id="iseTotal">--</strong><span>总分</span></div>
+            <div><strong id="iseAccuracy">--</strong><span>准确度</span></div>
+            <div><strong id="iseFluency">--</strong><span>流畅度</span></div>
+          </div>
+          <div id="iseDetailBlock" class="hidden">
+            <hr class="ise-divider">
+            <h4>逐字发音评测</h4>
+            <div id="iseWordsContainer" class="ise-words-container"></div>
+            <div class="ise-legend">
+              <span class="legend-item legend-good">优 (≥80)</span>
+              <span class="legend-item legend-fair">良 (<80)</span>
+              <span class="legend-item legend-error">错读</span>
+              <span class="legend-item legend-miss">漏读</span>
+              <span class="legend-item legend-repeat">重复</span>
+            </div>
+          </div>
+        </article>
+
+        <article class="info-card">
+          <h3>AI 反馈</h3>
+          <pre id="aiFeedback"></pre>
+        </article>
+
+        <article class="info-card">
+          <h3>识别文本</h3>
+          <p id="finalTranscription" class="transcription-text"></p>
+        </article>
+
+        <div class="action-grid bottom-actions">
+          <button id="againBtn" class="primary-btn" type="button">再练一次</button>
+          <button class="secondary-btn" data-back-home type="button">返回首页</button>
+        </div>
+      </section>
+
+      <section id="historyView" class="view">
+        <div class="section-title">
+          <button class="back-btn" data-back-home type="button">←</button>
+          <div>
+            <p class="eyebrow">历史记录</p>
+            <h2>练习记录</h2>
+          </div>
+          <button id="clearHistoryBtn" class="ghost-btn danger" type="button">清空</button>
+        </div>
+        <div id="historyList" class="history-list"></div>
+      </section>
+    </main>
+
+    <nav class="tab-bar" aria-label="主导航">
+      <button data-tab="homeView" class="active" type="button">首页</button>
+      <button data-tab="topicsView" type="button">题目</button>
+      <button data-tab="historyView" type="button">历史</button>
+    </nav>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <!-- Settings Modal -->
+  <div id="settingsModal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>API 密钥设置</h3>
+        <button id="closeSettingsBtn" class="close-btn" type="button">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="settings-hint">密钥仅保存在您的浏览器本地（localStorage），不会上传到任何服务器。</p>
+        <div class="form-group">
+          <label for="settingsAppId">讯飞 App ID</label>
+          <input type="text" id="settingsAppId" placeholder="例如: 2eaca11d" />
+        </div>
+        <div class="form-group">
+          <label for="settingsApiKey">讯飞 API Key</label>
+          <input type="password" id="settingsApiKey" placeholder="输入您的 API Key" />
+        </div>
+        <div class="form-group">
+          <label for="settingsApiSecret">讯飞 API Secret</label>
+          <input type="password" id="settingsApiSecret" placeholder="输入您的 API Secret" />
+        </div>
+        <button id="saveSettingsBtn" class="primary-btn" type="button">保存配置</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>
