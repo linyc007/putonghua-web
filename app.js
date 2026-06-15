@@ -203,6 +203,10 @@ let deferredInstallPrompt = null;
 let iatSendQueue = [];
 let isReconnectingIat = false;
 let currentAppId = "";
+let iatSendTimer = null;
+let isStoppingIat = false;
+let iatChunksSent = 0;
+let iatStartTime = 0;
 
 function topic(id, title, description, tips) {
   return { id, title, description, tips };
@@ -445,7 +449,7 @@ function createIatPayload(appId, status, audioBase64 = "") {
         language: "zh_cn",
         domain: "iat",
         accent: "mandarin",
-        vad_eos: 5000,
+        vad_eos: 3000,
       },
       data: {
         status,
@@ -511,6 +515,61 @@ async function reconnectIat() {
     console.error("IAT WebSocket reconnection failed:", error);
   } finally {
     isReconnectingIat = false;
+  }
+}
+
+function startIatSenderLoop() {
+  stopIatSenderLoop();
+  isStoppingIat = false;
+  iatChunksSent = 0;
+  iatStartTime = Date.now();
+  
+  const sendChunk = () => {
+    if (!isRecording) return;
+    
+    if (iatSocket?.readyState === WebSocket.OPEN) {
+      const elapsed = Date.now() - iatStartTime;
+      const expectedChunks = Math.floor(elapsed / 40);
+      
+      let sentInThisTick = 0;
+      while (iatChunksSent < expectedChunks && iatSendQueue.length > 0 && sentInThisTick < 5) {
+        const chunk = iatSendQueue.shift();
+        iatSocket.send(createIatPayload(currentAppId, 1, bytesToBase64(chunk)));
+        iatChunksSent++;
+        sentInThisTick++;
+      }
+      
+      if (iatSendQueue.length === 0) {
+        if (isStoppingIat) {
+          console.log("[SENDER] Queue empty, sending status 2 end frame");
+          try {
+            iatSocket.send(createIatPayload("", 2));
+          } catch (e) {
+            console.warn("Send end frame failed", e);
+          }
+          isRecording = false;
+          isStoppingIat = false;
+          stopIatSenderLoop();
+          return;
+        }
+      }
+    } else {
+      if (!isReconnectingIat && (iatSendQueue.length > 0 || isStoppingIat)) {
+        reconnectIat();
+      }
+      // Adjust start time to prevent burst-sending accumulated chunks when reconnected
+      iatStartTime = Date.now() - (iatChunksSent * 40);
+    }
+  };
+  
+  // Tick more frequently (20ms) to ensure smooth time tracking and quick catch-up
+  iatSendTimer = setInterval(sendChunk, 20);
+}
+
+function stopIatSenderLoop() {
+  if (iatSendTimer) {
+    clearInterval(iatSendTimer);
+    iatSendTimer = null;
   }
 }
 
@@ -602,24 +661,14 @@ async function startRecording() {
     const iat = await openIatSocket();
     iatSocket = iat.ws;
 
+    isRecording = true;
+    startIatSenderLoop();
+
     pcmRecorder = new PcmRecorder();
     await pcmRecorder.start((pcmBytes) => {
       pcmChunks.push(pcmBytes);
-      if (iatSocket?.readyState === WebSocket.OPEN) {
-        while (iatSendQueue.length > 0) {
-          const qBytes = iatSendQueue.shift();
-          iatSocket.send(createIatPayload(currentAppId, 1, bytesToBase64(qBytes)));
-        }
-        iatSocket.send(createIatPayload(currentAppId, 1, bytesToBase64(pcmBytes)));
-      } else {
-        iatSendQueue.push(pcmBytes);
-        if (isRecording) {
-          reconnectIat();
-        }
-      }
+      iatSendQueue.push(pcmBytes);
     });
-
-    isRecording = true;
     recordStartedAt = Date.now();
     $("recordBtn").disabled = false;
     $("recordBtn").textContent = "结束录音";
@@ -651,8 +700,7 @@ function startTimer() {
 }
 
 async function stopRecording() {
-  if (!isRecording) return;
-  isRecording = false;
+  if (!isRecording || isStoppingIat) return;
   clearInterval(timerInterval);
   $("recordBtn").disabled = true;
   $("recordBtn").classList.remove("recording");
@@ -670,37 +718,11 @@ async function stopRecording() {
 
   const finalTextPromise = new Promise((resolve) => {
     iatResolveFinal = resolve;
-    setTimeout(() => resolve(iatText), 2200);
+    const drainTimeout = Math.max(3000, iatSendQueue.length * 40 + 3000);
+    setTimeout(() => resolve(iatText), drainTimeout);
   });
 
-  try {
-    const sendEndFrame = () => {
-      while (iatSendQueue.length > 0) {
-        const qBytes = iatSendQueue.shift();
-        iatSocket.send(createIatPayload(currentAppId, 1, bytesToBase64(qBytes)));
-      }
-      iatSocket.send(createIatPayload("", 2));
-    };
-
-    if (iatSocket?.readyState === WebSocket.OPEN) {
-      sendEndFrame();
-    } else if (iatSendQueue.length > 0 || isReconnectingIat) {
-      // 如果正在重新连接，等待最多 1.5 秒后发送
-      let checkCount = 0;
-      const checkInterval = setInterval(() => {
-        if (iatSocket?.readyState === WebSocket.OPEN) {
-          clearInterval(checkInterval);
-          sendEndFrame();
-        }
-        checkCount++;
-        if (checkCount > 15) {
-          clearInterval(checkInterval);
-        }
-      }, 100);
-    }
-  } catch (error) {
-    console.warn("发送 IAT 结束帧失败", error);
-  }
+  isStoppingIat = true;
 
   const finalText = ((await finalTextPromise) || iatText).trim();
   iatSocket?.close();
@@ -711,6 +733,7 @@ async function stopRecording() {
     $("recordBtn").textContent = "重新录音";
     $("recordHint").textContent = "未检测到有效语音内容，请重试。";
     toast("未检测到有效语音内容，请重试。");
+    cleanupRecording();
     return;
   }
 
@@ -796,6 +819,7 @@ async function startTestAudioSimulation() {
     iatSocket = iat.ws;
     
     isRecording = true;
+    startIatSenderLoop();
     recordStartedAt = Date.now();
     $("recordBtn").textContent = "结束测试";
     $("recordBtn").disabled = false;
@@ -816,10 +840,7 @@ async function startTestAudioSimulation() {
       if (offset < pcmBytes.length) {
         const chunk = pcmBytes.subarray(offset, offset + chunkSize);
         pcmChunks.push(chunk);
-        
-        if (iatSocket?.readyState === WebSocket.OPEN) {
-          iatSocket.send(createIatPayload(currentAppId, 1, bytesToBase64(chunk)));
-        }
+        iatSendQueue.push(chunk);
         
         const audioElapsedMs = Math.round((offset / 2 / 16000) * 1000);
         const elapsedSec = Math.floor(audioElapsedMs / 1000);
@@ -852,8 +873,7 @@ async function startTestAudioSimulation() {
 }
 
 async function stopTestAudioSimulation() {
-  if (!isRecording) return;
-  isRecording = false;
+  if (!isRecording || isStoppingIat) return;
   clearInterval(testAudioInterval);
   
   $("recordBtn").disabled = true;
@@ -861,18 +881,13 @@ async function stopTestAudioSimulation() {
   $("recordBtn").textContent = "分析中…";
   $("recordHint").textContent = "音频流输入完成，正在整理转写并启动评测…";
   
-  try {
-    if (iatSocket?.readyState === WebSocket.OPEN) {
-      iatSocket.send(createIatPayload("", 2));
-    }
-  } catch (e) {
-    console.warn("Send end frame failed", e);
-  }
-  
   const finalTextPromise = new Promise((resolve) => {
     iatResolveFinal = resolve;
-    setTimeout(() => resolve(iatText), 1500);
+    const drainTimeout = Math.max(3000, iatSendQueue.length * 40 + 3000);
+    setTimeout(() => resolve(iatText), drainTimeout);
   });
+  
+  isStoppingIat = true;
   
   const finalText = ((await finalTextPromise) || iatText).trim();
   iatSocket?.close();
@@ -884,6 +899,7 @@ async function stopTestAudioSimulation() {
     $("recordBtn").textContent = "开始录音";
     $("recordHint").textContent = "未检测到有效语音内容，请重试。";
     toast("未检测到有效语音内容，请重试。");
+    cleanupRecording();
     return;
   }
   
@@ -943,6 +959,8 @@ async function stopTestAudioSimulation() {
 
 function cleanupRecording() {
   isRecording = false;
+  isStoppingIat = false;
+  stopIatSenderLoop();
   clearInterval(timerInterval);
   pcmRecorder?.stop();
   pcmRecorder = null;
