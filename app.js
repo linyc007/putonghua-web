@@ -764,6 +764,183 @@ async function stopRecording() {
   }
 }
 
+let testAudioInterval = null;
+
+async function startTestAudioSimulation() {
+  if (isRecording) return;
+  
+  try {
+    $("recordBtn").disabled = true;
+    $("testAudioBtn").disabled = true;
+    $("recordHint").textContent = "正在下载并准备 3 分钟演示音频…";
+    
+    const response = await fetch("test_audio.wav");
+    if (!response.ok) throw new Error("无法加载测试音频文件");
+    const arrayBuffer = await response.arrayBuffer();
+    
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    const audioCtx = new AudioContextCtor({ sampleRate: 16000 });
+    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+    const channelData = audioBuffer.getChannelData(0);
+    
+    const pcmBytes = floatTo16BitPcm(channelData);
+    
+    iatText = "";
+    pcmChunks = [];
+    iatSendQueue = [];
+    isReconnectingIat = false;
+    
+    $("recordHint").textContent = "已连接语音识别，开始模拟音频流式输入…";
+    
+    const iat = await openIatSocket();
+    iatSocket = iat.ws;
+    
+    isRecording = true;
+    recordStartedAt = Date.now();
+    $("recordBtn").textContent = "结束测试";
+    $("recordBtn").disabled = false;
+    $("recordBtn").classList.add("recording");
+    
+    let offset = 0;
+    const chunkSize = 1280;
+    
+    const speedupFactor = 5; 
+    const streamIntervalMs = Math.round(40 / speedupFactor);
+    
+    testAudioInterval = setInterval(() => {
+      if (!isRecording) {
+        clearInterval(testAudioInterval);
+        return;
+      }
+      
+      if (offset < pcmBytes.length) {
+        const chunk = pcmBytes.subarray(offset, offset + chunkSize);
+        pcmChunks.push(chunk);
+        
+        if (iatSocket?.readyState === WebSocket.OPEN) {
+          iatSocket.send(createIatPayload(currentAppId, 1, bytesToBase64(chunk)));
+        }
+        
+        const audioElapsedMs = Math.round((offset / 2 / 16000) * 1000);
+        const elapsedSec = Math.floor(audioElapsedMs / 1000);
+        const mins = String(Math.floor(elapsedSec / 60)).padStart(2, "0");
+        const secs = String(elapsedSec % 60).padStart(2, "0");
+        $("timerText").textContent = `${mins}:${secs}`;
+        
+        if (iatText) {
+          $("transcriptionText").textContent = iatText;
+          $("transcriptionCard").classList.remove("hidden");
+        }
+        
+        offset += chunkSize;
+      } else {
+        clearInterval(testAudioInterval);
+        stopTestAudioSimulation();
+      }
+    }, streamIntervalMs);
+    
+  } catch (error) {
+    console.error(error);
+    clearInterval(testAudioInterval);
+    isRecording = false;
+    $("recordBtn").disabled = false;
+    $("testAudioBtn").disabled = false;
+    $("recordBtn").textContent = "开始录音";
+    $("recordBtn").classList.remove("recording");
+    toast(error.message || "模拟评测启动失败");
+  }
+}
+
+async function stopTestAudioSimulation() {
+  if (!isRecording) return;
+  isRecording = false;
+  clearInterval(testAudioInterval);
+  
+  $("recordBtn").disabled = true;
+  $("recordBtn").classList.remove("recording");
+  $("recordBtn").textContent = "分析中…";
+  $("recordHint").textContent = "音频流输入完成，正在整理转写并启动评测…";
+  
+  try {
+    if (iatSocket?.readyState === WebSocket.OPEN) {
+      iatSocket.send(createIatPayload("", 2));
+    }
+  } catch (e) {
+    console.warn("Send end frame failed", e);
+  }
+  
+  const finalTextPromise = new Promise((resolve) => {
+    iatResolveFinal = resolve;
+    setTimeout(() => resolve(iatText), 1500);
+  });
+  
+  const finalText = ((await finalTextPromise) || iatText).trim();
+  iatSocket?.close();
+  iatSocket = null;
+  
+  if (!finalText) {
+    $("recordBtn").disabled = false;
+    $("testAudioBtn").disabled = false;
+    $("recordBtn").textContent = "开始录音";
+    $("recordHint").textContent = "未检测到有效语音内容，请重试。";
+    toast("未检测到有效语音内容，请重试。");
+    return;
+  }
+  
+  $("analyzingCard").classList.remove("hidden");
+  $("recordHint").textContent = "正在调用 AI 评测服务…";
+  
+  const audioDurationSec = Math.round(pcmChunks.length * 0.040);
+  
+  try {
+    const [sparkResult, iseResult] = await Promise.allSettled([
+      evaluateWithSpark(selectedTopic.title, finalText),
+      evaluateWithIse(finalText, pcmChunks),
+    ]);
+    
+    const feedback =
+      sparkResult.status === "fulfilled"
+        ? sparkResult.value.feedback
+        : `AI 综合评测失败：${sparkResult.reason?.message || "未知错误"}`;
+        
+    const scores =
+      sparkResult.status === "fulfilled"
+        ? sparkResult.value.scores
+        : fallbackScores(finalText, audioDurationSec);
+        
+    const ise = iseResult.status === "fulfilled" ? iseResult.value : null;
+    
+    const result = {
+      id: String(Date.now()),
+      timestamp: Date.now(),
+      topicId: selectedTopic.id,
+      topicTitle: selectedTopic.title,
+      durationSeconds: audioDurationSec,
+      transcribedText: finalText,
+      overallScore: scores.overall,
+      pronunciationScore: scores.pronunciation,
+      vocabularyScore: scores.vocabulary,
+      fluencyScore: scores.fluency,
+      pscLevel: scores.level,
+      aiFeedback: feedback,
+      ise,
+    };
+    
+    latestResult = result;
+    saveResult(result);
+    renderResult(result);
+    cleanupRecording();
+    showView("resultView");
+  } catch (error) {
+    console.error(error);
+    toast("评测失败: " + (error.message || "未知错误"));
+  } finally {
+    $("recordBtn").disabled = false;
+    $("testAudioBtn").disabled = false;
+    $("recordBtn").textContent = "开始录音";
+  }
+}
+
 function cleanupRecording() {
   isRecording = false;
   clearInterval(timerInterval);
@@ -1248,9 +1425,20 @@ function bindEvents() {
     const randomTopic = TOPICS[Math.floor(Math.random() * TOPICS.length)];
     startTopic(randomTopic.id, "simulate");
   });
-  $("recordBtn").addEventListener("click", () =>
-    isRecording ? stopRecording() : startRecording(),
-  );
+  $("recordBtn").addEventListener("click", () => {
+    if (isRecording) {
+      if (testAudioInterval) {
+        stopTestAudioSimulation();
+      } else {
+        stopRecording();
+      }
+    } else {
+      startRecording();
+    }
+  });
+  $("testAudioBtn").addEventListener("click", () => {
+    startTestAudioSimulation();
+  });
   $("againBtn").addEventListener("click", () =>
     startTopic(selectedTopic.id, "practice"),
   );
