@@ -804,8 +804,8 @@ async function startTestAudioSimulation() {
     let offset = 0;
     const chunkSize = 1280;
     
-    const speedupFactor = 5; 
-    const streamIntervalMs = Math.round(40 / speedupFactor);
+    const speedupFactor = 1; 
+    const streamIntervalMs = 40; // 40ms real-time interval to comply with Xunfei rate limits
     
     testAudioInterval = setInterval(() => {
       if (!isRecording) {
